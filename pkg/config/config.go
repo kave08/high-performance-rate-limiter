@@ -55,7 +55,7 @@ type SetupResult struct {
 var Cfg config
 
 func LoadConfig(configPath string) *SetupResult {
-	viper.SetEnvPrefix("MONEY")
+	viper.SetEnvPrefix("RateLimiter")
 	viper.AddConfigPath(".")
 	viper.AutomaticEnv()
 	viper.SetConfigFile(configPath)
@@ -73,7 +73,7 @@ func LoadConfig(configPath string) *SetupResult {
 		config.DecodeHook = mapstructure.ComposeDecodeHookFunc(
 			mapstructure.StringToTimeDurationHookFunc(),
 			mapstructure.StringToSliceHookFunc(","),
-			mapstructure.StringToTimeHookFunc(time.RFC3339), // will fix the issue with "{RFC3339}" string that are time.Time in config
+			mapstructure.StringToTimeHookFunc(time.RFC3339),
 		)
 	})
 	if err != nil {
