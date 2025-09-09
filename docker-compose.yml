@@ -1,0 +1,157 @@
+version: '3.8'
+
+services:
+  # Redis service for rate limiting backend
+  redis:
+    image: redis:7-alpine
+    container_name: rate_limiter_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - rate_limiter_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis Sentinel for high availability (optional)
+  redis-sentinel:
+    image: redis:7-alpine
+    container_name: rate_limiter_sentinel
+    depends_on:
+      - redis
+    ports:
+      - "26379:26379"
+    command: >
+      sh -c "
+        echo 'sentinel monitor mymaster redis 6379 1' > /etc/redis/sentinel.conf &&
+        echo 'sentinel down-after-milliseconds mymaster 5000' >> /etc/redis/sentinel.conf &&
+        echo 'sentinel failover-timeout mymaster 10000' >> /etc/redis/sentinel.conf &&
+        echo 'sentinel parallel-syncs mymaster 1' >> /etc/redis/sentinel.conf &&
+        redis-sentinel /etc/redis/sentinel.conf
+      "
+    networks:
+      - rate_limiter_network
+    restart: unless-stopped
+
+  # PostgreSQL for configuration management (optional)
+  postgres:
+    image: postgres:15-alpine
+    container_name: rate_limiter_postgres
+    environment:
+      POSTGRES_DB: rate_limiter
+      POSTGRES_USER: rate_limiter
+      POSTGRES_PASSWORD: rate_limiter_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - rate_limiter_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rate_limiter -d rate_limiter"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: rate_limiter_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - rate_limiter_network
+    restart: unless-stopped
+
+  # Grafana for metrics visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: rate_limiter_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - rate_limiter_network
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # Test application demonstrating rate limiter usage
+  demo_app:
+    build:
+      context: .
+      dockerfile: examples/Dockerfile
+    container_name: rate_limiter_demo
+    ports:
+      - "8080:8080"
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgres://rate_limiter:rate_limiter_password@postgres:5432/rate_limiter?sslmode=disable
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - rate_limiter_network
+    restart: unless-stopped
+
+  # Load testing tool (optional)
+  load_tester:
+    build:
+      context: .
+      dockerfile: tools/load_test/Dockerfile
+    container_name: rate_limiter_load_test
+    profiles:
+      - testing
+    environment:
+      TARGET_URL: http://demo_app:8080
+      CONCURRENT_USERS: "50"
+      REQUESTS_PER_USER: "100"
+      RAMP_UP_TIME: "30s"
+    depends_on:
+      - demo_app
+    networks:
+      - rate_limiter_network
+    volumes:
+      - ./tools/load_test/results:/results
+
+networks:
+  rate_limiter_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
